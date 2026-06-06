@@ -20,7 +20,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         self._proxy()
     def do_CONNECT(self):
-        # HTTPS CONNECT tunneling
+        # HTTPS CONNECT tunneling - bidirectional relay
         try:
             host, port = self.path.split(':')
             port = int(port)
@@ -29,15 +29,38 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             return
         try:
             import socket
+            import threading
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(30)
             s.connect((host, port))
             self.send_response(200, 'Connection Established')
             self.end_headers()
-            # In production: bidirectional copy
-            # For HTTPS, we'd need to relay raw bytes
-            s.close()
+            # Bidirectional relay using threading
+            def relay(src, dst):
+                try:
+                    buf = bytearray(8192)
+                    while True:
+                        n = src.recv_into(buf, 8192)
+                        if n == 0:
+                            break
+                        dst.sendall(buf[:n])
+                except:
+                    pass
+                finally:
+                    try: src.close()
+                    except: pass
+                    try: dst.close()
+                    except: pass
+            r1 = threading.Thread(target=relay, args=(self.connection, s), daemon=True)
+            r2 = threading.Thread(target=relay, args=(s, self.connection), daemon=True)
+            r1.start()
+            r2.start()
+            r1.join()
         except Exception as e:
-            self.send_error(502, str(e))
+            try:
+                self.send_error(502, str(e)[:200])
+            except:
+                pass
 
     def _proxy(self):
         url = self.path
